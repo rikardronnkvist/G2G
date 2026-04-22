@@ -95,7 +95,7 @@ Recommended task settings:
 - Run whether user is logged on or not
 - Run with highest privileges (if your environment requires)
 - Configure for your server OS version
-- Trigger: every 15 minutes (or your preferred interval)
+- Trigger: choose an interval that matches your change rate (for example hourly, or every 15 minutes for high-change environments)
 - **Task Scheduler > Settings > If the task is already running: "Do not start a new instance"**
 - Stop task if it runs unexpectedly long (optional safety)
 

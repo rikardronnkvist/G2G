@@ -67,7 +67,47 @@ function ConvertTo-StableJson {
         [int]$Depth = 15
     )
 
-    return ($InputObject | ConvertTo-Json -Depth $Depth)
+    function ConvertTo-DeterministicObject {
+        param([Parameter(Mandatory = $true)][object]$Value)
+
+        if ($null -eq $Value) {
+            return $null
+        }
+
+        if ($Value -is [string] -or $Value -is [ValueType]) {
+            return $Value
+        }
+
+        if ($Value -is [System.Collections.IDictionary]) {
+            $ordered = [ordered]@{}
+            foreach ($key in ($Value.Keys | ForEach-Object { [string]$_ } | Sort-Object)) {
+                $ordered[$key] = ConvertTo-DeterministicObject -Value $Value[$key]
+            }
+            return $ordered
+        }
+
+        if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+            $list = New-Object System.Collections.Generic.List[object]
+            foreach ($item in $Value) {
+                $list.Add((ConvertTo-DeterministicObject -Value $item))
+            }
+            return @($list)
+        }
+
+        $props = $Value.PSObject.Properties
+        if ($props.Count -gt 0) {
+            $ordered = [ordered]@{}
+            foreach ($prop in ($props | Sort-Object -Property Name)) {
+                $ordered[$prop.Name] = ConvertTo-DeterministicObject -Value $prop.Value
+            }
+            return $ordered
+        }
+
+        return $Value
+    }
+
+    $deterministic = ConvertTo-DeterministicObject -Value $InputObject
+    return ($deterministic | ConvertTo-Json -Depth $Depth)
 }
 
 function Get-GpoVersionString {
@@ -209,7 +249,6 @@ function Export-GpoLinksSnapshot {
     }
 
     $snapshot = [ordered]@{
-        GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         DomainDnsRoot = $DomainDnsRoot
         DomainDistinguishedName = $DomainDistinguishedName
         Containers = @($containers)
@@ -276,7 +315,6 @@ function Export-WmiFiltersSnapshot {
     }
 
     $snapshot = [ordered]@{
-        GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         Filters = @($filters | Sort-Object -Property Name, Guid)
         GpoAssignments = @($gpoToFilterMap | Sort-Object -Property GpoDisplayName, GpoGuid)
     }
@@ -702,7 +740,6 @@ try {
     }
 
     $newState = [ordered]@{
-        UpdatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         LinksHash = $linkDiffs.CurrentHash
         LinksSnapshot = $linksSnapshot
         WmiSnapshotHash = $wmiHash
