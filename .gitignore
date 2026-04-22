@@ -1,0 +1,21 @@
+# Runtime output
+logs/
+reports/
+temp/
+
+# Local secrets/config overrides
+*.local.json
+*.secrets.json
+secrets.*
+.env
+
+# PowerShell/editor artifacts
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Never track backup artifacts in this repo
+backups/
