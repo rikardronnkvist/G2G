@@ -64,9 +64,9 @@ temp/          (ignored)
 
 1. Clone this private repository to your server:
    ```powershell
-   git clone git@github.com:<org-or-user>/GPO-to-GIT.git C:\Ops\GPO-to-GIT
+   git clone git@github.com:contoso/GPO-to-GIT.git C:\Ops\GPO-to-GIT
    ```
-2. Validate prerequisites:
+2. Replace `contoso` with your actual GitHub organization or user, then validate prerequisites:
    ```powershell
    Get-Module -ListAvailable GroupPolicy,ActiveDirectory
    git --version

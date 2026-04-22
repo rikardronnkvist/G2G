@@ -121,6 +121,9 @@ try {
     if ([string]::IsNullOrWhiteSpace($Branch)) {
         $Branch = (git rev-parse --abbrev-ref HEAD).Trim()
     }
+    if ([string]::IsNullOrWhiteSpace($Branch) -or $Branch -eq 'HEAD') {
+        throw 'Could not determine git branch or repository is in detached HEAD state. Provide -Branch explicitly.'
+    }
 
     & git checkout $Branch | Out-Null
     if ($LASTEXITCODE -ne 0) {

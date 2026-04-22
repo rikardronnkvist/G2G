@@ -476,6 +476,8 @@ function Send-TeamsWebhook {
         [Parameter(Mandatory = $true)]
         [hashtable]$Summary,
         [Parameter(Mandatory = $false)]
+        [int]$TopCount = 10,
+        [Parameter(Mandatory = $false)]
         [switch]$DryRunMode
     )
 
@@ -483,7 +485,7 @@ function Send-TeamsWebhook {
         return
     }
 
-    $topItems = @($Summary.Changed + $Summary.New + $Summary.Deleted + $Summary.LinkChanged | Select-Object -First $TeamsTopCount)
+    $topItems = @($Summary.Changed + $Summary.New + $Summary.Deleted + $Summary.LinkChanged | Select-Object -First $TopCount)
     $lines = @(
         'GPO sync result:'
         "Changed: $($Summary.Changed.Count)"
@@ -797,14 +799,14 @@ try {
     $commitMessage = $commitMessageBuilder.ToString().TrimEnd()
 
     if ($changeCount -eq 0) {
-        Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -DryRunMode:$DryRun
+        Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -TopCount $TeamsTopCount -DryRunMode:$DryRun
         Write-Log -Message 'No changes detected.'
         exit 0
     }
 
     if ($DryRun) {
         Write-Log -Message '[DRYRUN] Skipping git add/commit/push.'
-        Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -DryRunMode:$DryRun
+        Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -TopCount $TeamsTopCount -DryRunMode:$DryRun
         exit 1
     }
 
@@ -814,7 +816,7 @@ try {
             $Branch = (git rev-parse --abbrev-ref HEAD).Trim()
         }
         if ([string]::IsNullOrWhiteSpace($Branch) -or $Branch -eq 'HEAD') {
-            Fail -Message 'Could not determine git branch. Provide -Branch explicitly.' -Code 12
+            Fail -Message 'Could not determine git branch or repository is in detached HEAD state. Provide -Branch explicitly.' -Code 12
         }
 
         Write-Log -Message "Running git checkout $Branch"
@@ -838,7 +840,7 @@ try {
         $hasStagedChanges = ($LASTEXITCODE -ne 0)
         if (-not $hasStagedChanges) {
             Write-Log -Message 'No staged git changes found after export.'
-            Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -DryRunMode:$false
+            Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -TopCount $TeamsTopCount -DryRunMode:$false
             exit 0
         }
 
@@ -855,12 +857,12 @@ try {
         & git push origin $Branch | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Log -Message 'git push failed after successful export/commit.' -Level 'ERROR'
-            Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -DryRunMode:$false
+            Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -TopCount $TeamsTopCount -DryRunMode:$false
             exit 2
         }
 
         Write-Log -Message 'git push completed successfully.'
-        Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -DryRunMode:$false
+        Send-TeamsWebhook -WebhookUrl $TeamsWebhookUrl -Summary $summary -TopCount $TeamsTopCount -DryRunMode:$false
         exit 1
     }
     finally {
