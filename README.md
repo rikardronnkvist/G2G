@@ -113,3 +113,7 @@ While it does not attempt to fully replace AGPM’s approval and editing workflo
 * `wmi-filters/<guid>.md` exported WMI filter snapshots
 * `reports/g2g-YYYYMMDD-HHMMSS.md` Markdown report per run with detected changes
 * `gpo-state.json` stores the last known state used for change detection
+
+## License
+
+This project is licensed under the [MIT License](LICENSE). Copyright (c) 2026 rikardronnkvist.
