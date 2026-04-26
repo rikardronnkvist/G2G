@@ -10,6 +10,20 @@ Per run, it writes console log output, creates a Markdown report when changes ar
 
 If you only want to store artifacts locally you can use the `-DisableGIT` parameter.
 
+## Why G2G instead of AGPM
+
+With Advanced Group Policy Management (AGPM) now deprecated and no longer actively developed, organizations still need a reliable way to detect, audit, and understand changes to Group Policy.
+
+This script provides a simple and transparent alternative by shifting GPO change tracking to Git-based version control, using data that already exists in Active Directory. Instead of relying on a proprietary workflow or additional infrastructure, it:
+
+- Detects **what actually changed** (new, modified, deleted GPOs, links, and WMI filters) using version-aware comparison.
+- Stores changes in **open, readable formats** (Markdown, HTML, XML) that are easy to review without special tools.
+- Creates a **clear audit trail** with timestamps, diffs, and commit history, suitable for troubleshooting, audits, and compliance.
+- Requires only **read access** to Active Directory and does not interfere with existing GPO management processes.
+- Fits naturally into modern operational practices such as automation, peer review, and change transparency.
+
+While it does not attempt to fully replace AGPM’s approval and editing workflow, it effectively covers the most critical requirement after AGPM: **knowing exactly when, where, and how Group Policy changed**, using tooling that is simple, vendor‑neutral, and future‑proof.
+
 # Requirements
 
 - Domain joined Windows Server
