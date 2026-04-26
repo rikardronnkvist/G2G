@@ -24,6 +24,8 @@ This script provides a simple and transparent alternative by shifting GPO change
 
 While it does not attempt to fully replace AGPM’s approval and editing workflow, it effectively covers the most critical requirement after AGPM: **knowing exactly when, where, and how Group Policy changed**, using tooling that is simple, vendor‑neutral, and future‑proof.
 
+![GPO-to-GIT](./g2g.jpg?raw=true)
+
 # Requirements
 
 - Domain joined Windows Server
