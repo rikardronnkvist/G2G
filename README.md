@@ -1,0 +1,101 @@
+# G2G - GPO-to-GIT
+
+PowerShell solution for tracking Active Directory Group Policy Object (GPO) changes in Git using version-aware detection.
+
+## How it works
+
+`./Invoke-GpoGitSync.ps1` is designed for Scheduled Task execution on a domain-joined Windows Server with RSAT tools. The script scans for changes in in GPO's, WMI-Filters and links.
+
+Per run, it writes console log output, creates a Markdown report when changes are present, and commits/pushes tracked artifacts to Git when changes are present.
+
+If you only want to store artifacts locally you can use the `-DisableGIT` parameter.
+
+# Requirements
+
+- Domain joined Windows Server
+- PowerShell 5.1+ (PowerShell 7 also supported when RSAT cmdlets are available)
+- RSAT modules:
+  - `GroupPolicy`
+  - `ActiveDirectory`
+- Git CLI installed and available in PATH
+- AD permissions to **read** GPOs, links, and WMI filter containers
+- Git repo clone available locally and configured with `origin`
+
+# Setup
+
+* Copy the script `Invoke-GpoGitSync.ps1` to your server
+* Validate prerequisites:
+   ```powershell
+   Get-Module -ListAvailable GroupPolicy,ActiveDirectory
+   git --version
+   ```
+* Create a empty Git repo (init with a simple README.md file)
+* Clone the repo
+   ```powershell
+   New-Item -Path "C:\Ops\GPO-Backup" -ItemType Directory
+   cd "C:\Ops\GPO-Backup"
+   git clone https://github.com/myaccount/GPO.git
+   ```
+* Perform a dry run:
+   ```powershell
+   . C:\Ops\Scripts\Invoke-GpoGitSync.ps1 -RepoPath "C:\Ops\GPO-Backup" -DryRun
+   ```
+* Perform first real run:
+   ```powershell
+   . "C:\Ops\Scripts\Invoke-GpoGitSync.ps1" -RepoPath "C:\Ops\GPO-Backup"
+   ```
+* Create service account
+   * Grant the service account `Logon as a Service`
+* Configure Git authentication
+   * Create a dedicated service account for the scheduled task.
+   * Generate an SSH key for that account.
+   * Add the public key as a deploy key or user key with least required scope.
+   * Ensure `origin` uses SSH URL (`git@github.com:...`).
+   * Validate non-interactive access:
+      ```powershell
+      ssh -T git@github.com
+      git -C C:\Ops\GPO-Backup pull --ff-only
+      ```
+* Schedule a task to run
+  * Program: `powershell.exe`
+  * Arguments: `-NoProfile -ExecutionPolicy RemoteSigned -File "C:\Ops\Scripts\Invoke-GpoGitSync.ps1" -RepoPath "C:\Ops\GPO-Backup"`
+  * Start in: `C:\Ops\Scripts`
+  * When running this task, use the following account: Previously created service account
+  * Run whether user is logged on or not
+  * Run with highest privileges (if your environment requires)
+  * Configure for your server OS version
+  * Trigger: choose an interval that matches your change rate
+  * **Important!** Task Scheduler > Settings > If the task is already running: "Do not start a new instance"
+  * Stop task if it runs unexpectedly long (optional safety)
+
+# Workflow
+
+* Check and validate all requirements
+* Load the previous state from `gpo-state.json`
+* Query the current AD domain, enumerate all GPOs, and build a normalized snapshot.
+* Compare the current GPO snapshot with the previous state to detect:
+   - new GPOs
+   - changed GPOs by version, status, or assigned WMI filter
+   - deleted GPOs
+* Query AD containers and collect GPO link information for domains, OUs, and sites.
+* Export the current WMI filter snapshot, compare it with the previous run, and detect new, changed, or deleted filters.
+* Compare stored per-GPO link data with the current link data to detect link-only changes.
+* Export artifacts for changed targets
+* Write the updated `gpo-state.json` with the latest snapshot data.
+* Build a run summary, write a markdown report under `reports/`, and refresh the reports table in the repository `README.md`.
+* Stop here when:
+   - no changes were detected
+   - `-DryRun` was used
+   - `-DisableGIT` was used
+   - the target path is not a git repository
+* If git is enabled and changes exist, run `git checkout`, `git pull --ff-only`, `git add -A`, `git commit`, and `git push`.
+
+## Output
+
+* `README.md` summary and link to last 25 reports
+* `gpos/<guid>/links.md` Markdown report of GPO links
+* `gpos/<guid>/report.html` complete GPO report in HTML format
+* `gpos/<guid>/report.xml` complete GPO report in XML format
+* `wmi-filters/<guid>.md` exported WMI filter snapshots
+* `reports/g2g-YYYYMMDD-HHMMSS.md` Markdown report per run with detected changes
+* `gpo-state.json` stores the last known state used for change detection
