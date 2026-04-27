@@ -29,7 +29,7 @@ While it does not attempt to fully replace AGPM’s approval and editing workflo
 # Requirements
 
 - Domain joined Windows Server
-- PowerShell 5.1+ (PowerShell 7 also supported when RSAT cmdlets are available)
+- PowerShell 5.1+
 - RSAT modules:
   - `GroupPolicy`
   - `ActiveDirectory`
@@ -46,33 +46,74 @@ While it does not attempt to fully replace AGPM’s approval and editing workflo
    git --version
    ```
 * Create a empty Git repo (init with a simple README.md file)
+* Create service account (in example `svcG2G`)
+   * Grant the service account `Logon as a Batch Job`
+   * Temporarily grant the service account access to logon
+* Optional: Grant Read Access to the service account
+   * To all GPO's
+      ```powershell
+      Get-GPO -All | ForEach-Object {
+         Set-GPPermission `
+            -Guid $_.Id `
+            -TargetName "svcG2G" `
+            -TargetType User `
+            -PermissionLevel GpoRead
+      }
+      ```
+   * To WMI filters
+      * In Group Policy Management
+      * Forest - Domains - your domain - WMI Filters - Delegation
+      * Add your service account with Read access
+* Start Powershell as the service account
 * Clone the repo
    ```powershell
    New-Item -Path "C:\Ops\GPO-Backup" -ItemType Directory
-   cd "C:\Ops\GPO-Backup"
-   git clone https://github.com/myaccount/GPO.git
+   git clone https://github.com/myaccount/GPO-Backup.git C:\Ops\GPO-Backup
    ```
-* Perform a dry run:
+* Perform a dry run
    ```powershell
    . C:\Ops\Scripts\Invoke-GpoGitSync.ps1 -RepoPath "C:\Ops\GPO-Backup" -DryRun
    ```
-* Perform first real run:
-   ```powershell
-   . "C:\Ops\Scripts\Invoke-GpoGitSync.ps1" -RepoPath "C:\Ops\GPO-Backup"
-   ```
-* Create service account
-   * Grant the service account `Logon as a Service`
 * Configure Git authentication
-   * Create a dedicated service account for the scheduled task.
-   * Generate an SSH key for that account.
-   * Add the public key as a deploy key or user key with least required scope.
-   * Ensure `origin` uses SSH URL (`git@github.com:...`).
-   * Validate non-interactive access:
+   * Generate SSH key
+      ```powershell
+      ssh-keygen -t ed25519 -C "g2g@contoso.com" -f "C:\Users\svcG2G\.ssh\id_ed25519"
+      Get-Content "C:\Users\svcG2G\.ssh\id_ed25519.pub"
+      ```
+   * Add the public key as a deploy key or user key with least required scope
+   * Start the Windows SSH Agent (in a Powershell prompt as Administrator)
+      ```powershell
+      Get-Service ssh-agent | Set-Service -StartupType Automatic
+      Start-Service ssh-agent
+      ```
+   * Store your passphrase for the SSH key
+      ```powershell
+      ssh-add C:\Users\svcG2G\.ssh\id_ed25519
+      ```
+   * (Depending on your setup you might need to fiddle around with Git config for `core.sshCommand` and/or the file `C:\Users\svcG2G\.ssh\config`)
+   * Ensure `origin` uses SSH URL
+      ```powershell
+      git -C C:\Ops\GPO-Backup remote set-url origin git@github.com:myaccount/GPO-Backup.git
+      ```
+   * Validate non-interactive access (No input should be needed)
       ```powershell
       ssh -T git@github.com
       git -C C:\Ops\GPO-Backup pull --ff-only
       ```
-* Schedule a task to run
+   * Edit the README.md file (just add som random text to it)
+   * Validate that you can push to Git
+      ```powershell
+      git -C C:\GIT\GPO-Backup add README.md
+      git -C C:\GIT\GPO-Backup commit -m "Update README"
+      git -C C:\GIT\GPO-Backup push
+      ```
+* Perform first real run
+   ```powershell
+   . "C:\Ops\Scripts\Invoke-GpoGitSync.ps1" -RepoPath "C:\Ops\GPO-Backup"
+   ```
+* Vaildate that you have all files in the target repo
+* Remove service accounts temporarily granted access to local logon, only `Logon as a Batch Job` should be needed
+* Automate it by creating a schedule task
   * Program: `powershell.exe`
   * Arguments: `-NoProfile -ExecutionPolicy RemoteSigned -File "C:\Ops\Scripts\Invoke-GpoGitSync.ps1" -RepoPath "C:\Ops\GPO-Backup"`
   * Start in: `C:\Ops\Scripts`
@@ -118,4 +159,4 @@ While it does not attempt to fully replace AGPM’s approval and editing workflo
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE). Copyright (c) 2026 rikardronnkvist.
+This project is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Rikard Rönnkvist.
