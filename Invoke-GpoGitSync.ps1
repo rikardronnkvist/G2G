@@ -158,6 +158,27 @@ function Normalize-DomainDnsRoot {
     return $DomainDnsRoot.Trim().ToLowerInvariant()
 }
 
+function Convert-DistinguishedNameToDnsRoot {
+    param([Parameter(Mandatory = $false)][string]$DistinguishedName)
+
+    if ([string]::IsNullOrWhiteSpace($DistinguishedName)) {
+        return ''
+    }
+
+    $domainParts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($segment in ($DistinguishedName -split ',')) {
+        if ($segment -match '^(?i)DC=(.+)$') {
+            $domainParts.Add($Matches[1])
+        }
+    }
+
+    if ($domainParts.Count -eq 0) {
+        return ''
+    }
+
+    return (Normalize-DomainDnsRoot -DomainDnsRoot ($domainParts -join '.'))
+}
+
 function ConvertTo-SafePathSegment {
     param([Parameter(Mandatory = $false)][string]$Value)
 
@@ -191,6 +212,33 @@ function Get-GpoStateKey {
     }
 
     return "$normalizedDomain::$normalizedGuid"
+}
+
+function Get-GpoMetadataFromStateKey {
+    param(
+        [Parameter(Mandatory = $true)][string]$StateKey,
+        [Parameter(Mandatory = $false)][switch]$ForestScoped
+    )
+
+    if (-not $ForestScoped) {
+        return [ordered]@{
+            DomainDnsRoot = ''
+            Guid = Normalize-GuidString -GuidValue $StateKey
+        }
+    }
+
+    $parts = [string]$StateKey -split '::', 2
+    if ($parts.Count -eq 2) {
+        return [ordered]@{
+            DomainDnsRoot = Normalize-DomainDnsRoot -DomainDnsRoot $parts[0]
+            Guid = Normalize-GuidString -GuidValue $parts[1]
+        }
+    }
+
+    return [ordered]@{
+        DomainDnsRoot = ''
+        Guid = Normalize-GuidString -GuidValue $StateKey
+    }
 }
 
 function Get-WmiFilterStateKey {
@@ -606,13 +654,27 @@ function ConvertFrom-GpLinkValue {
         $rawPath = [string]$match.Groups['path'].Value
         $options = [int]$match.Groups['options'].Value
         $guid = [string]::Empty
+        $linkedGpoDomainDistinguishedName = ''
+        $linkedGpoDomainDnsRoot = ''
         if ($rawPath -match '\{(?<guid>[0-9A-Fa-f\-]{36})\}') {
             $guid = $Matches['guid']
+        }
+
+        $pathWithoutScheme = $rawPath -replace '^(?i)LDAP://', ''
+        $distinguishedPath = $pathWithoutScheme
+        if ($pathWithoutScheme -match '^[^/]+/(?<dn>.+)$') {
+            $distinguishedPath = [string]$Matches['dn']
+        }
+        if ($distinguishedPath -match '(?i)(?<domainDn>DC=.*)$') {
+            $linkedGpoDomainDistinguishedName = [string]$Matches['domainDn']
+            $linkedGpoDomainDnsRoot = Convert-DistinguishedNameToDnsRoot -DistinguishedName $linkedGpoDomainDistinguishedName
         }
 
         $links += [ordered]@{
             Order = $order
             GpoGuid = $guid.ToLowerInvariant()
+            GpoDomainDistinguishedName = $linkedGpoDomainDistinguishedName
+            GpoDomainDnsRoot = $linkedGpoDomainDnsRoot
             Path = $rawPath
             Enforced = [bool]($options -band 2)
             Disabled = [bool]($options -band 1)
@@ -724,7 +786,7 @@ function Export-GpoLinksForEachGpo {
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $false)][string]$DomainDnsRoot = '',
         [Parameter(Mandatory = $false)][switch]$ForestScoped,
-        [Parameter(Mandatory = $true)][string[]]$CurrentGpoGuids,
+        [Parameter(Mandatory = $true)][string[]]$CurrentGpoKeys,
         [Parameter(Mandatory = $false)][switch]$DryRunMode
     )
 
@@ -736,19 +798,25 @@ function Export-GpoLinksForEachGpo {
                 if ($null -eq $link) { continue }
                 $gpoGuid = Get-PropertyValue -Object $link -Name 'GpoGuid'
                 if ($gpoGuid) {
-                    $guidStr = ([string]$gpoGuid).ToLowerInvariant()
-                    if (-not $gpoLinksMap.ContainsKey($guidStr)) {
-                        $gpoLinksMap[$guidStr] = @()
+                    $linkedGpoDomainDnsRoot = Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $link -Name 'GpoDomainDnsRoot'))
+                    $gpoKey = Get-GpoStateKey -Guid ([string]$gpoGuid) -DomainDnsRoot $linkedGpoDomainDnsRoot -ForestScoped:$ForestScoped
+                    if (-not $gpoLinksMap.ContainsKey($gpoKey)) {
+                        $gpoLinksMap[$gpoKey] = [ordered]@{
+                            GpoGuid = Normalize-GuidString -GuidValue $gpoGuid
+                            GpoDomainDnsRoot = $linkedGpoDomainDnsRoot
+                            Containers = @()
+                        }
                     }
                     $linkObj = [ordered]@{
                         Order = [int](Get-PropertyValue -Object $link -Name 'Order')
                         GpoGuid = [string](Get-PropertyValue -Object $link -Name 'GpoGuid')
+                        GpoDomainDnsRoot = $linkedGpoDomainDnsRoot
                         Path = [string](Get-PropertyValue -Object $link -Name 'Path')
                         Enforced = [bool](Get-PropertyValue -Object $link -Name 'Enforced')
                         Disabled = [bool](Get-PropertyValue -Object $link -Name 'Disabled')
                         Options = [int](Get-PropertyValue -Object $link -Name 'Options')
                     }
-                    $gpoLinksMap[$guidStr] += [ordered]@{
+                    $gpoLinksMap[$gpoKey].Containers += [ordered]@{
                         DistinguishedName = Get-PropertyValue -Object $container -Name 'DistinguishedName'
                         IsDomainRoot = [bool](Get-PropertyValue -Object $container -Name 'IsDomainRoot')
                         BlockInheritance = [bool](Get-PropertyValue -Object $container -Name 'BlockInheritance')
@@ -759,16 +827,21 @@ function Export-GpoLinksForEachGpo {
         }
     }
 
-    foreach ($gpoGuid in $gpoLinksMap.Keys) {
-        $gpoDir = Get-GpoDirectoryPath -RepoRoot $RepoRoot -GpoGuid $gpoGuid -DomainDnsRoot $DomainDnsRoot -ForestScoped:$ForestScoped
+    foreach ($gpoKey in $gpoLinksMap.Keys) {
+        $linkEntry = $gpoLinksMap[$gpoKey]
+        $gpoGuid = Normalize-GuidString -GuidValue (Get-PropertyValue -Object $linkEntry -Name 'GpoGuid')
+        $linkedGpoDomainDnsRoot = Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $linkEntry -Name 'GpoDomainDnsRoot'))
+        $gpoDir = Get-GpoDirectoryPath -RepoRoot $RepoRoot -GpoGuid $gpoGuid -DomainDnsRoot $linkedGpoDomainDnsRoot -ForestScoped:$ForestScoped
         $linksPath = Join-Path -Path $gpoDir -ChildPath 'links.md'
 
         $linksData = [ordered]@{
-            Containers = @($gpoLinksMap[$gpoGuid])
+            GpoGuid = $gpoGuid
+            DomainDnsRoot = $linkedGpoDomainDnsRoot
+            Containers = @($linkEntry.Containers)
         }
 
         if ($DryRunMode) {
-            Write-Log -Message "[DRYRUN] Would write links for GPO $gpoGuid to $linksPath"
+            Write-Log -Message "[DRYRUN] Would write links for GPO $gpoKey to $linksPath"
         }
         else {
             if (-not (Test-Path -LiteralPath $gpoDir)) {
@@ -802,19 +875,22 @@ function Export-GpoLinksForEachGpo {
         }
     }
 
-    foreach ($gpoGuid in @($CurrentGpoGuids | ForEach-Object { Normalize-GuidString -GuidValue $_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)) {
-        if ($gpoLinksMap.ContainsKey($gpoGuid)) {
+    foreach ($gpoKey in @($CurrentGpoKeys | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)) {
+        if ($gpoLinksMap.ContainsKey($gpoKey)) {
             continue
         }
 
-        $gpoDir = Get-GpoDirectoryPath -RepoRoot $RepoRoot -GpoGuid $gpoGuid -DomainDnsRoot $DomainDnsRoot -ForestScoped:$ForestScoped
+        $gpoMetadata = Get-GpoMetadataFromStateKey -StateKey $gpoKey -ForestScoped:$ForestScoped
+        $gpoGuid = Normalize-GuidString -GuidValue (Get-PropertyValue -Object $gpoMetadata -Name 'Guid')
+        $linkedGpoDomainDnsRoot = Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $gpoMetadata -Name 'DomainDnsRoot'))
+        $gpoDir = Get-GpoDirectoryPath -RepoRoot $RepoRoot -GpoGuid $gpoGuid -DomainDnsRoot $linkedGpoDomainDnsRoot -ForestScoped:$ForestScoped
         $linksPath = Join-Path -Path $gpoDir -ChildPath 'links.md'
         if (-not (Test-Path -LiteralPath $linksPath)) {
             continue
         }
 
         if ($DryRunMode) {
-            Write-Log -Message "[DRYRUN] Would remove stale links file for GPO $gpoGuid at $linksPath"
+            Write-Log -Message "[DRYRUN] Would remove stale links file for GPO $gpoKey at $linksPath"
         }
         else {
             Remove-Item -LiteralPath $linksPath -Force
@@ -1909,49 +1985,48 @@ try {
         }
     }
 
+    $allContainers = @()
     foreach ($domainDnsRoot in $containersByDomain.Keys) {
-        $containers = @($containersByDomain[$domainDnsRoot])
-        $domainGpoKeys = @(
-            $currentSnapshotByKey.Keys | Where-Object {
-                (Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $currentSnapshotByKey[$_] -Name 'DomainDnsRoot'))) -eq $domainDnsRoot
-            }
-        )
+        $allContainers += @($containersByDomain[$domainDnsRoot])
+    }
 
-        foreach ($gpoKey in $domainGpoKeys) {
-            $currentSnapshot = $currentSnapshotByKey[$gpoKey]
-            $guid = Normalize-GuidString -GuidValue (Get-PropertyValue -Object $currentSnapshot -Name 'Guid')
-            $gpoDir = Get-GpoDirectoryPath -RepoRoot $RepoPath -GpoGuid $guid -DomainDnsRoot $domainDnsRoot -ForestScoped:$CompleteForest
+    foreach ($gpoKey in $currentSnapshotByKey.Keys) {
+        $currentSnapshot = $currentSnapshotByKey[$gpoKey]
+        $guid = Normalize-GuidString -GuidValue (Get-PropertyValue -Object $currentSnapshot -Name 'Guid')
+        $gpoDomainDnsRoot = Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $currentSnapshot -Name 'DomainDnsRoot'))
+        $gpoDir = Get-GpoDirectoryPath -RepoRoot $RepoPath -GpoGuid $guid -DomainDnsRoot $gpoDomainDnsRoot -ForestScoped:$CompleteForest
 
-            $currentGpoLinksData = @()
-            foreach ($container in $containers) {
-                $rawLinks = Get-PropertyValue -Object $container -Name 'Links'
-                if ($null -eq $rawLinks) { continue }
-                $matchingLink = @($rawLinks | Where-Object {
-                    ([string](Get-PropertyValue -Object $_ -Name 'GpoGuid')).ToLowerInvariant() -eq $guid
-                }) | Select-Object -First 1
-                if ($null -eq $matchingLink) { continue }
-                $linkObj = [ordered]@{
-                    Order    = [int](Get-PropertyValue -Object $matchingLink -Name 'Order')
-                    GpoGuid  = [string](Get-PropertyValue -Object $matchingLink -Name 'GpoGuid')
-                    Path     = [string](Get-PropertyValue -Object $matchingLink -Name 'Path')
-                    Enforced = [bool](Get-PropertyValue -Object $matchingLink -Name 'Enforced')
-                    Disabled = [bool](Get-PropertyValue -Object $matchingLink -Name 'Disabled')
-                    Options  = [int](Get-PropertyValue -Object $matchingLink -Name 'Options')
-                }
-                $currentGpoLinksData += [ordered]@{
-                    DistinguishedName = [string](Get-PropertyValue -Object $container -Name 'DistinguishedName')
-                    IsDomainRoot      = [bool](Get-PropertyValue -Object $container -Name 'IsDomainRoot')
-                    BlockInheritance  = [bool](Get-PropertyValue -Object $container -Name 'BlockInheritance')
-                    Links             = @($linkObj)
-                }
+        $currentGpoLinksData = @()
+        foreach ($container in $allContainers) {
+            $rawLinks = Get-PropertyValue -Object $container -Name 'Links'
+            if ($null -eq $rawLinks) { continue }
+            $matchingLink = @($rawLinks | Where-Object {
+                (Get-GpoStateKey -Guid ([string](Get-PropertyValue -Object $_ -Name 'GpoGuid')) -DomainDnsRoot ([string](Get-PropertyValue -Object $_ -Name 'GpoDomainDnsRoot')) -ForestScoped:$CompleteForest) -eq $gpoKey
+            }) | Select-Object -First 1
+            if ($null -eq $matchingLink) { continue }
+            $linkObj = [ordered]@{
+                Order            = [int](Get-PropertyValue -Object $matchingLink -Name 'Order')
+                GpoGuid          = [string](Get-PropertyValue -Object $matchingLink -Name 'GpoGuid')
+                GpoDomainDnsRoot = [string](Get-PropertyValue -Object $matchingLink -Name 'GpoDomainDnsRoot')
+                Path             = [string](Get-PropertyValue -Object $matchingLink -Name 'Path')
+                Enforced         = [bool](Get-PropertyValue -Object $matchingLink -Name 'Enforced')
+                Disabled         = [bool](Get-PropertyValue -Object $matchingLink -Name 'Disabled')
+                Options          = [int](Get-PropertyValue -Object $matchingLink -Name 'Options')
             }
-            $currentGpoLinksData = @($currentGpoLinksData | Sort-Object -Property @{ Expression = { [string]$_.DistinguishedName } })
-            
-            $previousLinks = Get-GpoLinksFromFile -GpoDir $gpoDir
-            $previousContainers = @()
-            if ($null -ne $previousLinks) {
-                $previousContainers = @(Get-PropertyValue -Object $previousLinks -Name 'Containers')
+            $currentGpoLinksData += [ordered]@{
+                DistinguishedName = [string](Get-PropertyValue -Object $container -Name 'DistinguishedName')
+                IsDomainRoot      = [bool](Get-PropertyValue -Object $container -Name 'IsDomainRoot')
+                BlockInheritance  = [bool](Get-PropertyValue -Object $container -Name 'BlockInheritance')
+                Links             = @($linkObj)
             }
+        }
+        $currentGpoLinksData = @($currentGpoLinksData | Sort-Object -Property @{ Expression = { [string]$_.DistinguishedName } })
+        
+        $previousLinks = Get-GpoLinksFromFile -GpoDir $gpoDir
+        $previousContainers = @()
+        if ($null -ne $previousLinks) {
+            $previousContainers = @(Get-PropertyValue -Object $previousLinks -Name 'Containers')
+        }
 
             # Normalize both to ensure consistent comparison (ConvertFrom-Json can deserialize differently than native objects)
             $prevNormalized = @()
@@ -2012,10 +2087,10 @@ try {
                 [void]$exportTargets.Add($gpoKey)
 
                 $alreadyChanged = @($changed | Where-Object {
-                    $_.Guid -eq $guid -and (Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $_ -Name 'DomainDnsRoot'))) -eq $domainDnsRoot
+                    $_.Guid -eq $guid -and (Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $_ -Name 'DomainDnsRoot'))) -eq $gpoDomainDnsRoot
                 }).Count -gt 0
                 $alreadyNew = @($newItems | Where-Object {
-                    $_.Guid -eq $guid -and (Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $_ -Name 'DomainDnsRoot'))) -eq $domainDnsRoot
+                    $_.Guid -eq $guid -and (Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $_ -Name 'DomainDnsRoot'))) -eq $gpoDomainDnsRoot
                 }).Count -gt 0
                 if (-not $alreadyChanged -and -not $alreadyNew) {
                     Write-Log -Message "Link-changed: $gpoKey, $($currentSnapshot.DisplayName)"
@@ -2023,21 +2098,15 @@ try {
                             Type = 'GPO'
                             DisplayName = $currentSnapshot.DisplayName
                             Guid = $guid
-                            DomainDnsRoot = $domainDnsRoot
+                            DomainDnsRoot = $gpoDomainDnsRoot
                             CompleteForestScan = [bool](Get-PropertyValue -Object $currentSnapshot -Name 'CompleteForestScan')
-                            Detail = Add-ScopeToDetail -Detail 'Container link/order/enforced change' -DomainDnsRoot $domainDnsRoot -ForestScoped:$CompleteForest
+                            Detail = Add-ScopeToDetail -Detail 'Container link/order/enforced change' -DomainDnsRoot $gpoDomainDnsRoot -ForestScoped:$CompleteForest
                         })
                 }
             }
-        }
-
-        $domainCurrentGuids = @(
-            $domainGpoKeys |
-                ForEach-Object { Normalize-GuidString -GuidValue (Get-PropertyValue -Object $currentSnapshotByKey[$_] -Name 'Guid') } |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        )
-        Export-GpoLinksForEachGpo -Containers $containers -RepoRoot $RepoPath -DomainDnsRoot $domainDnsRoot -ForestScoped:$CompleteForest -CurrentGpoGuids $domainCurrentGuids -DryRunMode:$DryRun
     }
+
+    Export-GpoLinksForEachGpo -Containers $allContainers -RepoRoot $RepoPath -ForestScoped:$CompleteForest -CurrentGpoKeys $currentSnapshotByKey.Keys -DryRunMode:$DryRun
 
     foreach ($gpoKey in @($exportTargets) | Sort-Object) {
         $gpo = $currentGposByKey[$gpoKey]
