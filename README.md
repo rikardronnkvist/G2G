@@ -10,6 +10,10 @@ Per run, it writes console log output, creates a Markdown report when changes ar
 
 If you only want to store artifacts locally you can use the `-DisableGIT` parameter.
 
+If you want to track every domain in the current Active Directory forest, use `-CompleteForest` (the legacy spelling `-CompleteForrest` is also accepted).
+
+In `-CompleteForest` mode, if a child domain contains a GPO with the same GUID as a parent domain GPO, the child-domain folder keeps `links.md` but the `README.md` points to the parent-domain GPO folder instead of exporting duplicate HTML/XML reports. This does not apply to the well-known default-policy GUIDs that legitimately exist in multiple domains.
+
 ## Why G2G instead of AGPM
 
 With Advanced Group Policy Management (AGPM) now deprecated and no longer actively developed, organizations still need a reliable way to detect, audit, and understand changes to Group Policy.
@@ -129,12 +133,12 @@ While it does not attempt to fully replace AGPM’s approval and editing workflo
 
 * Check and validate all requirements
 * Load the previous state from `gpo-state.json`
-* Query the current AD domain, enumerate all GPOs, and build a normalized snapshot.
+* Query the current AD domain, or every domain in the current forest when `-CompleteForest` is used, enumerate all GPOs, and build a normalized snapshot.
 * Compare the current GPO snapshot with the previous state to detect:
    - new GPOs
    - changed GPOs by version, status, or assigned WMI filter
    - deleted GPOs
-* Query AD containers and collect GPO link information for domains, OUs, and sites.
+* Query AD containers in each scanned domain and collect GPO link information for the domain root and OUs.
 * Export the current WMI filter snapshot, compare it with the previous run, and detect new, changed, or deleted filters.
 * Compare stored per-GPO link data with the current link data to detect link-only changes.
 * Export artifacts for changed targets
@@ -150,10 +154,12 @@ While it does not attempt to fully replace AGPM’s approval and editing workflo
 ## Output
 
 * `README.md` summary and link to last 25 reports
-* `gpos/<guid>/links.md` Markdown report of GPO links
-* `gpos/<guid>/report.html` complete GPO report in HTML format
-* `gpos/<guid>/report.xml` complete GPO report in XML format
-* `wmi-filters/<guid>.md` exported WMI filter snapshots
+* `gpos/<guid>/links.md` Markdown report of GPO links in single-domain mode
+* `gpos/<guid>/report.html` complete GPO report in HTML format in single-domain mode
+* `gpos/<guid>/report.xml` complete GPO report in XML format in single-domain mode
+* `wmi-filters/<guid>.md` exported WMI filter snapshots in single-domain mode
+* `gpos/<domain>/<guid>/...` namespaced GPO artifacts when `-CompleteForest` is used
+* `wmi-filters/<domain>/<guid>.md` namespaced WMI filter snapshots when `-CompleteForest` is used
 * `reports/g2g-YYYYMMDD-HHMMSS.md` Markdown report per run with detected changes
 * `gpo-state.json` stores the last known state used for change detection
 
