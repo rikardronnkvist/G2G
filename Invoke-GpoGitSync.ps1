@@ -241,6 +241,89 @@ function Get-GpoMetadataFromStateKey {
     }
 }
 
+function Get-ParentDomainDnsRoots {
+    param([Parameter(Mandatory = $false)][string]$DomainDnsRoot)
+
+    $normalizedDomain = Normalize-DomainDnsRoot -DomainDnsRoot $DomainDnsRoot
+    if ([string]::IsNullOrWhiteSpace($normalizedDomain)) {
+        return @()
+    }
+
+    $parts = @($normalizedDomain -split '\.')
+    if ($parts.Count -lt 3) {
+        return @()
+    }
+
+    $parents = @()
+    for ($i = 1; $i -lt ($parts.Count - 1); $i++) {
+        $parents += ($parts[$i..($parts.Count - 1)] -join '.')
+    }
+
+    return @($parents | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function Test-IsWellKnownMultiDomainGpoGuid {
+    param([Parameter(Mandatory = $false)][string]$Guid)
+
+    $normalizedGuid = Normalize-GuidString -GuidValue $Guid
+    return ($normalizedGuid -eq '31b2f340-016d-11d2-945f-00c04fb984f9' -or $normalizedGuid -eq '6ac1786c-016f-11d2-945f-00c04fb984f9')
+}
+
+function Get-GpoDirectoryRelativePathFromGpoReadme {
+    param(
+        [Parameter(Mandatory = $true)][string]$CurrentGuid,
+        [Parameter(Mandatory = $false)][string]$CurrentDomainDnsRoot,
+        [Parameter(Mandatory = $true)][string]$TargetGuid,
+        [Parameter(Mandatory = $false)][string]$TargetDomainDnsRoot,
+        [Parameter(Mandatory = $false)][switch]$ForestScoped
+    )
+
+    $normalizedTargetGuid = Normalize-GuidString -GuidValue $TargetGuid
+    if ($ForestScoped) {
+        $targetDomainSegment = ConvertTo-SafePathSegment -Value (Normalize-DomainDnsRoot -DomainDnsRoot $TargetDomainDnsRoot)
+        return "../../$targetDomainSegment/$normalizedTargetGuid/"
+    }
+
+    return "../$normalizedTargetGuid/"
+}
+
+function Update-GpoDuplicateReportMetadata {
+    param([Parameter(Mandatory = $true)][System.Collections.IDictionary]$SnapshotByKey)
+
+    foreach ($snapshotKey in @($SnapshotByKey.Keys)) {
+        $snapshot = $SnapshotByKey[$snapshotKey]
+        if ($null -eq $snapshot) { continue }
+
+        $snapshot['ReportAliasToStateKey'] = ''
+        $snapshot['ReportAliasToDomainDnsRoot'] = ''
+        $snapshot['ReportAliasToGuid'] = ''
+
+        $guid = Normalize-GuidString -GuidValue (Get-PropertyValue -Object $snapshot -Name 'Guid')
+        $domainDnsRoot = Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $snapshot -Name 'DomainDnsRoot'))
+        $forestScoped = [bool](Get-PropertyValue -Object $snapshot -Name 'CompleteForestScan')
+
+        if (-not $forestScoped -or [string]::IsNullOrWhiteSpace($guid) -or [string]::IsNullOrWhiteSpace($domainDnsRoot)) {
+            continue
+        }
+
+        if (Test-IsWellKnownMultiDomainGpoGuid -Guid $guid) {
+            continue
+        }
+
+        foreach ($parentDomainDnsRoot in @(Get-ParentDomainDnsRoots -DomainDnsRoot $domainDnsRoot)) {
+            $parentStateKey = Get-GpoStateKey -Guid $guid -DomainDnsRoot $parentDomainDnsRoot -ForestScoped:$true
+            if (-not $SnapshotByKey.Contains($parentStateKey)) {
+                continue
+            }
+
+            $snapshot['ReportAliasToStateKey'] = $parentStateKey
+            $snapshot['ReportAliasToDomainDnsRoot'] = $parentDomainDnsRoot
+            $snapshot['ReportAliasToGuid'] = $guid
+            break
+        }
+    }
+}
+
 function Get-WmiFilterStateKey {
     param(
         [Parameter(Mandatory = $true)][string]$Guid,
@@ -451,6 +534,9 @@ function Export-GpoArtifacts {
     $gpoGuid = Normalize-GuidString -GuidValue (Get-PropertyValue -Object $Snapshot -Name 'Guid')
     $domainDnsRoot = Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $Snapshot -Name 'DomainDnsRoot'))
     $forestScoped = [bool](Get-PropertyValue -Object $Snapshot -Name 'CompleteForestScan')
+    $reportAliasToStateKey = [string](Get-PropertyValue -Object $Snapshot -Name 'ReportAliasToStateKey')
+    $reportAliasToDomainDnsRoot = Normalize-DomainDnsRoot -DomainDnsRoot ([string](Get-PropertyValue -Object $Snapshot -Name 'ReportAliasToDomainDnsRoot'))
+    $reportAliasToGuid = Normalize-GuidString -GuidValue (Get-PropertyValue -Object $Snapshot -Name 'ReportAliasToGuid')
     $displayName = [string](Get-PropertyValue -Object $Snapshot -Name 'DisplayName')
     if ([string]::IsNullOrWhiteSpace($displayName)) {
         $displayName = $gpoGuid
@@ -558,12 +644,60 @@ function Export-GpoArtifacts {
     }
 
     if ($DryRunMode) {
-        Write-Log -Message "[DRYRUN] Would export report/README for '$displayName' ($gpoGuid)."
+        if (-not [string]::IsNullOrWhiteSpace($reportAliasToStateKey)) {
+            Write-Log -Message "[DRYRUN] Would write alias README for '$displayName' ($gpoGuid) to parent domain '$reportAliasToDomainDnsRoot'."
+        }
+        else {
+            Write-Log -Message "[DRYRUN] Would export report/README for '$displayName' ($gpoGuid)."
+        }
         return
     }
 
     if (-not (Test-Path -LiteralPath $gpoDir)) {
         New-Item -ItemType Directory -Path $gpoDir -Force | Out-Null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($reportAliasToStateKey)) {
+        $parentFolderRelativePath = Get-GpoDirectoryRelativePathFromGpoReadme -CurrentGuid $gpoGuid -CurrentDomainDnsRoot $domainDnsRoot -TargetGuid $reportAliasToGuid -TargetDomainDnsRoot $reportAliasToDomainDnsRoot -ForestScoped:$forestScoped
+
+        foreach ($staleReportPath in @($reportPathXml, $reportPathHtml)) {
+            if (Test-Path -LiteralPath $staleReportPath) {
+                Remove-Item -LiteralPath $staleReportPath -Force
+            }
+        }
+
+        $readme = New-Object System.Text.StringBuilder
+        [void]$readme.AppendLine("# $displayName")
+        [void]$readme.AppendLine()
+        [void]$readme.AppendLine("## Metadata")
+        [void]$readme.AppendLine()
+        [void]$readme.AppendLine("| Property | Value |")
+        [void]$readme.AppendLine("|----------|-------|")
+        [void]$readme.AppendLine("| **GUID** | $gpoGuid |")
+        if (-not [string]::IsNullOrWhiteSpace($domainDnsRoot)) {
+            [void]$readme.AppendLine("| **Domain** | $domainDnsRoot |")
+        }
+        [void]$readme.AppendLine("| **Status** | $($Snapshot.GpoStatus) |")
+        [void]$readme.AppendLine("| **Exported** | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz') |")
+        [void]$readme.AppendLine()
+        [void]$readme.AppendLine("## Report Source")
+        [void]$readme.AppendLine()
+        [void]$readme.AppendLine("This domain contains a GPO with the same GUID as a parent domain GPO. XML and HTML reports are not exported here.")
+        [void]$readme.AppendLine()
+        [void]$readme.AppendLine("Use the parent domain GPO folder instead: [$reportAliasToDomainDnsRoot/$reportAliasToGuid]($parentFolderRelativePath)")
+        [void]$readme.AppendLine()
+        [void]$readme.AppendLine("## Files")
+        [void]$readme.AppendLine()
+        [void]$readme.AppendLine("| File | Content |")
+        [void]$readme.AppendLine("|----------|-------|")
+        [void]$readme.AppendLine("| [$reportAliasToDomainDnsRoot/$reportAliasToGuid]($parentFolderRelativePath) | Parent domain GPO folder with shared reports |")
+        if (Test-Path -LiteralPath $linksPath) {
+            [void]$readme.AppendLine("| [links.md](links.md) | GPO link information (containers and OU hierarchy) |")
+        }
+        [void]$readme.AppendLine()
+
+        Set-Content -LiteralPath $readmePath -Value $readme.ToString() -Encoding UTF8
+        return
     }
 
     $reportXmlParams = @{
@@ -1796,6 +1930,8 @@ try {
         }
     }
 
+    Update-GpoDuplicateReportMetadata -SnapshotByKey $currentSnapshotByKey
+
     $changed = New-Object System.Collections.Generic.List[object]
     $newItems = New-Object System.Collections.Generic.List[object]
     $deleted = New-Object System.Collections.Generic.List[object]
@@ -1841,7 +1977,11 @@ try {
         if ($current.WmiFilter) { $currentWmiPath = [string]$current.WmiFilter.Path }
         $wmiChanged = ($previousWmiPath -ne $currentWmiPath)
 
-        if ($versionChanged -or $statusChanged -or $wmiChanged) {
+        $previousReportAliasToStateKey = [string](Get-PropertyValue -Object $previous -Name 'ReportAliasToStateKey')
+        $currentReportAliasToStateKey = [string](Get-PropertyValue -Object $current -Name 'ReportAliasToStateKey')
+        $reportAliasChanged = ($previousReportAliasToStateKey -ne $currentReportAliasToStateKey)
+
+        if ($versionChanged -or $statusChanged -or $wmiChanged -or $reportAliasChanged) {
             $detailParts = @()
             if ($versionChanged) {
                 $detailParts += "Versions $(Get-GpoVersionString -GpoLike $previous) -> $(Get-GpoVersionString -GpoLike $current)"
@@ -1851,6 +1991,14 @@ try {
             }
             if ($wmiChanged) {
                 $detailParts += 'WMI filter changed'
+            }
+            if ($reportAliasChanged) {
+                if ([string]::IsNullOrWhiteSpace($currentReportAliasToStateKey)) {
+                    $detailParts += 'Report alias removed'
+                }
+                else {
+                    $detailParts += "Report alias -> $([string](Get-PropertyValue -Object $current -Name 'ReportAliasToDomainDnsRoot'))"
+                }
             }
 
             Write-Log -Message "Changed: $gpoKey, $($current.DisplayName) - $($detailParts -join '; ')"

@@ -12,6 +12,8 @@ If you only want to store artifacts locally you can use the `-DisableGIT` parame
 
 If you want to track every domain in the current Active Directory forest, use `-CompleteForest` (the legacy spelling `-CompleteForrest` is also accepted).
 
+In `-CompleteForest` mode, if a child domain contains a GPO with the same GUID as a parent domain GPO, the child-domain folder keeps `links.md` but the `README.md` points to the parent-domain GPO folder instead of exporting duplicate HTML/XML reports. This does not apply to the well-known default-policy GUIDs that legitimately exist in multiple domains.
+
 ## Why G2G instead of AGPM
 
 With Advanced Group Policy Management (AGPM) now deprecated and no longer actively developed, organizations still need a reliable way to detect, audit, and understand changes to Group Policy.
