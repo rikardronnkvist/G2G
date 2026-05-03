@@ -2349,14 +2349,36 @@ try {
     }
 
     $isGitRepo = $false
+    $gitRepoCheckDetail = ''
     try {
-        $null = & git -C $RepoPath rev-parse --git-dir 2>&1
-        $isGitRepo = ($LASTEXITCODE -eq 0)
+        $insideWorkTreeOutput = & git -C $RepoPath rev-parse --is-inside-work-tree 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $insideWorkTreeText = ([string]($insideWorkTreeOutput | Select-Object -First 1)).Trim().ToLowerInvariant()
+            $isGitRepo = ($insideWorkTreeText -eq 'true')
+        }
+        else {
+            $gitRepoCheckDetail = ((@($insideWorkTreeOutput) -join ' ') -replace '\s+', ' ').Trim()
+        }
     }
-    catch { }
+    catch {
+        $gitRepoCheckDetail = [string]$_.Exception.Message
+    }
+
+    # Fallback for environments where rev-parse detection is unreliable but a git marker exists.
+    if (-not $isGitRepo) {
+        $gitMarkerPath = Join-Path -Path $RepoPath -ChildPath '.git'
+        if (Test-Path -LiteralPath $gitMarkerPath) {
+            $isGitRepo = $true
+        }
+    }
 
     if (-not $isGitRepo) {
-        Write-Log -Message 'RepoPath is not a git repository. Files exported locally; skipping git operations.'
+        if ([string]::IsNullOrWhiteSpace($gitRepoCheckDetail)) {
+            Write-Log -Message 'RepoPath is not a git repository. Files exported locally; skipping git operations.'
+        }
+        else {
+            Write-Log -Message "RepoPath is not a git repository. Files exported locally; skipping git operations. Detail: $gitRepoCheckDetail"
+        }
         exit 1
     }
 
