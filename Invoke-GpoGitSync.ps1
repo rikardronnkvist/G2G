@@ -1324,10 +1324,20 @@ try {
     Write-Log -Message "Starting GPO sync. RepoPath=$RepoPath DryRun=$($DryRun.IsPresent)"
 
     try {
-        Import-Module GroupPolicy -SkipEditionCheck -ErrorAction Stop
+        $groupPolicyImportParams = @{
+            Name = 'GroupPolicy'
+            ErrorAction = 'Stop'
+        }
+
+        # -SkipEditionCheck is unavailable in Windows PowerShell 5.1.
+        if ((Get-Command -Name Import-Module).Parameters.ContainsKey('SkipEditionCheck')) {
+            $groupPolicyImportParams['SkipEditionCheck'] = $true
+        }
+
+        Import-Module @groupPolicyImportParams
     }
     catch {
-        Fail -Message 'GroupPolicy module is required but not available. Install RSAT Group Policy Management tools.' -Code 10
+        Fail -Message "GroupPolicy module is required but failed to import. $($_.Exception.Message)" -Code 10
     }
 
     try {
