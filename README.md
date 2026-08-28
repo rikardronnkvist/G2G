@@ -29,6 +29,7 @@ This script provides a simple and transparent alternative by shifting GPO change
 While it does not attempt to fully replace AGPM’s approval and editing workflow, it effectively covers the most critical requirement after AGPM: **knowing exactly when, where, and how Group Policy changed**, using tooling that is simple, vendor‑neutral, and future‑proof.
 
 ![GPO-to-GIT](./g2g.jpg?raw=true)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Frikardronnkvist%2FG2G.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Frikardronnkvist%2FG2G?ref=badge_shield)
 
 # Requirements
 
@@ -166,3 +167,6 @@ While it does not attempt to fully replace AGPM’s approval and editing workflo
 ## License
 
 This project is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Rikard Rönnkvist.
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Frikardronnkvist%2FG2G.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Frikardronnkvist%2FG2G?ref=badge_large)
